@@ -6,6 +6,8 @@
 # .tfvars files (Likely to contain secrets)
 *.tfvars
 *.tfvars.json
+!*.example.tfvars
+config.hcl
 
 # Terraform configuration directories
 .terraform/
