@@ -7,11 +7,9 @@ resource "random_string" "suffix" {
 resource "aws_s3_bucket" "terraform_state" {
   bucket = "${var.project_name}-state-${random_string.suffix.result}"
 
-  # force_destroy = true # Activar cuando se requiera forzar el eliminado
-
   lifecycle {
-    prevent_destroy = true
-    # prevent_destroy = false # Activar cuando se quiera eliminar
+    # prevent_destroy = true # Activar cuando NO se quiera eliminar
+    prevent_destroy = false # Activar cuando se quiera eliminar
   }
 }
 
