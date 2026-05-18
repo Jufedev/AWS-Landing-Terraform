@@ -49,7 +49,7 @@ jobs:
             - name: Setup Terraform CLI
               uses: hashicorp/setup-terraform@v2
               with:
-                  terraform_version: "1.14.3"
+                  terraform_version: "1.15.2"
 
             - name: Configure AWS credentials - OIDC
               uses: aws-actions/configure-aws-credentials@v4
