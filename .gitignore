@@ -22,3 +22,6 @@ backend.generated.tf
 .vscode/
 .idea/
 .DS_Store
+
+# Agent tooling
+.atl/
