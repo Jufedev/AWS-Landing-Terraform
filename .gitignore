@@ -12,6 +12,7 @@ config.hcl
 # Terraform configuration directories
 .terraform/
 .terraform.lock.hcl
+backend.generated.tf
 
 # Logs
 *.log
