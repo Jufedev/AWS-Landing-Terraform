@@ -9,7 +9,7 @@ on:
                 type: choice
                 options:
                     - connectivity
-                    - production
+                    - workloads
             terraform_action:
                 description: "Acción a ejecutar"
                 required: true
@@ -24,13 +24,20 @@ on:
                 description: "ID de bloqueo (Solo para la opción unlock)"
                 required: false
                 type: string
+            environmentWorkload:
+                description: "Entorno para la carga de trabajo"
+                required: false
+                type: choice
+                options:
+                    - dev
+                    - prod
 
 env:
     AWS_REGION: "us-east-1"
     WORK_DIR: "accounts/${{ github.event.inputs.target_account }}"
 
     TF_VAR_aws_region: "us-east-1"
-    TF_VAR_project_name: "terra-lading-zone"
+    TF_VAR_project_name: "aws-landing-terraform"
     TF_VAR_s3_state: ${{ secrets.S3_STATE }}
 
 jobs:
@@ -57,6 +64,20 @@ jobs:
                   role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
                   aws-region: ${{ env.AWS_REGION }}
 
+            - name: Resolve deploy role
+              run: |
+                  if [ "${{ inputs.target_account }}" = "connectivity" ]; then
+                    echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_CONNECTIVITY }}" >> "$GITHUB_ENV"
+                    echo "TF_VAR_cidr_ingress_egress=${{ vars.IN_OUT_CIDR }}" >> "$GITHUB_ENV"
+                    echo "TF_VAR_spoke_cidrs=${{ vars.VPCS }}" >> "$GITHUB_ENV"
+                  elif [ "${{ inputs.environmentWorkload }}" = "prod" ]; then
+                    echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_WORKLOADS_PROD }}" >> "$GITHUB_ENV"
+                    echo "TF_VAR_cidrs_spokes=${{ vars.SPOKE_CIDRS }}" >> "$GITHUB_ENV"
+                  else
+                    echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_WORKLOADS_DEV }}" >> "$GITHUB_ENV"
+                    echo "TF_VAR_cidrs_spokes=${{ vars.SPOKE_CIDRS }}" >> "$GITHUB_ENV"
+                  fi
+
             - name: Terraform init
               working-directory: ${{ env.WORK_DIR }}
               run: |
@@ -64,6 +85,12 @@ jobs:
                     -backend-config="bucket=${{ secrets.S3_STATE }}" \
                     -backend-config="key=${{ env.WORK_DIR }}/terraform.tfstate" \
                     -backend-config="region=${{ env.AWS_REGION }}"
+
+            - name: Select workspace
+              working-directory: ${{ env.WORK_DIR }}
+              if: ${{ github.event.inputs.target_account == 'workloads' }}
+              run: |
+                  terraform workspace select ${{ github.event.inputs.environmentWorkload }} || terraform workspace new ${{ github.event.inputs.environmentWorkload }}
 
             - name: Terraform Force Unlock
               if: ${{ github.event.inputs.lock_id != '' }}

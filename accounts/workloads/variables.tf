@@ -18,18 +18,13 @@ variable "deploy_role_arn" {
   type        = string
 }
 
-variable "cidr_ingress_egress" {
-  description = "Valor de la VPC ingress/egress"
-  type = object({
+variable "cidrs_spokes" {
+  description = "Valores defecto del las cargas"
+  type = map(object({
     cidr_block = string
     subnets = map(object({
       cidr_block = string
       az         = string
     }))
-  })
-}
-
-variable "spoke_cidrs" {
-  description = "Variable para las routes"
-  type        = map(string)
+  }))
 }
