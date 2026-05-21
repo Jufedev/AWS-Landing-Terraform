@@ -64,14 +64,22 @@ jobs:
                   role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
                   aws-region: ${{ env.AWS_REGION }}
 
-            - name: Resolve deploy role
+            - name: Set connectivity variables
+              if: inputs.target_account == 'connectivity'
+              env:
+                  IN_OUT_CIDR: ${{ vars.IN_OUT_CIDR }}
+                  SPOKE_VPCS: ${{ vars.SPOKE_VPCS }}
+                  WORKLOADS_ACCOUNT_IDS: ${{ secrets.WORKLOADS_ACCOUNT_IDS }}
+              working-directory: ${{ env.WORK_DIR }}
               run: |
-                  if [ "${{ inputs.target_account }}" = "connectivity" ]; then
-                    echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_CONNECTIVITY }}" >> "$GITHUB_ENV"
-                    echo "TF_VAR_cidr_ingress_egress=${{ vars.IN_OUT_CIDR }}" >> "$GITHUB_ENV"
-                    echo "TF_VAR_spoke_vpcs=${{ vars.SPOKE_VPCS }}" >> "$GITHUB_ENV"
-                    echo "TF_VAR_workloads_account_ids=${{ secrets.WORKLOADS_ACCOUNT_IDS }}" >> "$GITHUB_ENV"
-                  elif [ "${{ inputs.environmentWorkload }}" = "prod" ]; then
+                  echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_CONNECTIVITY }}" >> "$GITHUB_ENV"
+                  printf '{"cidr_ingress_egress":%s,"spoke_vpcs":%s,"workloads_account_ids":%s}' \
+                    "$IN_OUT_CIDR" "$SPOKE_VPCS" "$WORKLOADS_ACCOUNT_IDS" > ci.auto.tfvars.json
+
+            - name: Set workloads variables
+              if: inputs.target_account == 'workloads'
+              run: |
+                  if [ "${{ inputs.environmentWorkload }}" = "prod" ]; then
                     echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_WORKLOADS_PROD }}" >> "$GITHUB_ENV"
                   else
                     echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_WORKLOADS_DEV }}" >> "$GITHUB_ENV"
