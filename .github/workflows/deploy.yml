@@ -70,20 +70,35 @@ jobs:
                   IN_OUT_CIDR: ${{ vars.IN_OUT_CIDR }}
                   SPOKE_VPCS: ${{ vars.SPOKE_VPCS }}
                   WORKLOADS_ACCOUNT_IDS: ${{ secrets.WORKLOADS_ACCOUNT_IDS }}
+                  ROLE_ARN: ${{ secrets.ROLE_ARN_CONNECTIVITY }}
               working-directory: ${{ env.WORK_DIR }}
               run: |
-                  echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_CONNECTIVITY }}" >> "$GITHUB_ENV"
+                  if [ -z "$ROLE_ARN" ]; then
+                    echo "::error::ROLE_ARN_CONNECTIVITY no está configurado. Sin este rol, Terraform desplegaria en la cuenta Tooling."
+                    exit 1
+                  fi
+                  echo "TF_VAR_deploy_role_arn=$ROLE_ARN" >> "$GITHUB_ENV"
                   printf '{"cidr_ingress_egress":%s,"spoke_vpcs":%s,"workloads_account_ids":%s}' \
                     "$IN_OUT_CIDR" "$SPOKE_VPCS" "$WORKLOADS_ACCOUNT_IDS" > ci.auto.tfvars.json
 
             - name: Set workloads variables
               if: inputs.target_account == 'workloads'
+              env:
+                  ROLE_ARN_DEV: ${{ secrets.ROLE_ARN_WORKLOADS_DEV }}
+                  ROLE_ARN_PROD: ${{ secrets.ROLE_ARN_WORKLOADS_PROD }}
               run: |
                   if [ "${{ inputs.environmentWorkload }}" = "prod" ]; then
-                    echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_WORKLOADS_PROD }}" >> "$GITHUB_ENV"
+                    ROLE_ARN="$ROLE_ARN_PROD"
+                    LABEL="ROLE_ARN_WORKLOADS_PROD"
                   else
-                    echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_WORKLOADS_DEV }}" >> "$GITHUB_ENV"
+                    ROLE_ARN="$ROLE_ARN_DEV"
+                    LABEL="ROLE_ARN_WORKLOADS_DEV"
                   fi
+                  if [ -z "$ROLE_ARN" ]; then
+                    echo "::error::$LABEL no está configurado. Sin este rol, Terraform desplegaria en la cuenta Tooling."
+                    exit 1
+                  fi
+                  echo "TF_VAR_deploy_role_arn=$ROLE_ARN" >> "$GITHUB_ENV"
 
             - name: Terraform init
               working-directory: ${{ env.WORK_DIR }}

@@ -87,20 +87,21 @@ resource "aws_route" "spoke_to_tgw" {
   transit_gateway_id     = aws_ec2_transit_gateway.this.id
 }
 
-resource "aws_ram_resource_share" "spokes" {
-  name                      = "spoke-subnets"
+resource "aws_ram_resource_share" "spoke" {
+  for_each                  = var.spoke_vpcs
+  name                      = "${each.key}-subnets"
   allow_external_principals = false
 }
 
 resource "aws_ram_resource_association" "subnets" {
   for_each           = local.spoke_app_db_subnet_arns
   resource_arn       = each.value
-  resource_share_arn = aws_ram_resource_share.spokes.arn
+  resource_share_arn = aws_ram_resource_share.spoke[split(".", each.key)[0]].arn
 }
 
 resource "aws_ram_principal_association" "workloads" {
   for_each           = var.workloads_account_ids
   principal          = each.value
-  resource_share_arn = aws_ram_resource_share.spokes.arn
+  resource_share_arn = aws_ram_resource_share.spoke[each.key].arn
 }
 

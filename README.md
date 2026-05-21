@@ -33,7 +33,7 @@ Modelo hub-spoke donde la cuenta **Connectivity** gestiona TODO el networking (h
 - **Transit Gateway**: punto central de la topología hub-spoke. Todos los spokes se conectan via attachments.
 - **Internet Gateway**: salida directa a internet para las subnets públicas del hub.
 - **NAT Gateway**: salida a internet para tráfico proveniente de los spokes (TGW subnets → NAT → Internet).
-- **AWS RAM**: comparte subnets de app/db de los spokes a las cuentas de Workloads (dev y prod son cuentas separadas). Las subnets TGW NO se comparten (son infraestructura de networking).
+- **AWS RAM**: un resource share por spoke (`dev-subnets`, `prod-subnets`), cada uno compartido solo a su cuenta Workloads correspondiente. Las subnets TGW NO se comparten (son infraestructura de networking). Las keys de `spoke_vpcs` deben coincidir con las keys de `workloads_account_ids`.
 
 **Routing del Hub**:
 
@@ -79,7 +79,53 @@ Pipeline con `workflow_dispatch`:
 - Selección de cuenta (`connectivity` | `workloads`)
 - Selección de acción (`plan` | `apply` | `destroy` | `unlock`)
 - Selección de entorno (`dev` | `prod`) para workloads
-- Resolución automática del rol de despliegue y variables de red por cuenta/entorno via `GITHUB_ENV`
+- Resolución automática del rol de despliegue y variables de red por cuenta/entorno
+
+**Roles cross-account requeridos**:
+
+| Rol | Cuenta | Propósito |
+|-----|--------|-----------|
+| OIDC base | Tooling | GitHub Actions lo asume via OIDC. Desde aquí se asumen los roles destino |
+| Deploy Connectivity | Connectivity | Despliega VPCs, TGW, gateways, rutas, RAM |
+| Deploy Workloads Dev | Workloads Dev | Despliega compute en subnets compartidas (dev) |
+| Deploy Workloads Prod | Workloads Prod | Despliega compute en subnets compartidas (prod) |
+
+Cada cuenta destino necesita su propio rol de despliegue que el rol OIDC base (Tooling) pueda asumir. Esto requiere:
+
+1. **En cada cuenta destino** (Connectivity, Workloads Dev, Workloads Prod): crear un rol IAM con los permisos necesarios para desplegar recursos.
+
+2. **Trust relationship** del rol destino — debe permitir que el rol OIDC de Tooling lo asuma:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::<TOOLING_ACCOUNT_ID>:role/<OIDC_ROLE_NAME>"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
+
+3. **Policy en el rol OIDC de Tooling** — debe tener permiso para asumir los roles destino:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "sts:AssumeRole",
+  "Resource": [
+    "arn:aws:iam::<CONNECTIVITY_ACCOUNT_ID>:role/<DEPLOY_ROLE_NAME>",
+    "arn:aws:iam::<WORKLOADS_DEV_ACCOUNT_ID>:role/<DEPLOY_ROLE_NAME>",
+    "arn:aws:iam::<WORKLOADS_PROD_ACCOUNT_ID>:role/<DEPLOY_ROLE_NAME>"
+  ]
+}
+```
+
+Sin estos roles y trust relationships, Terraform opera en la cuenta Tooling (donde aterriza el OIDC) en vez de la cuenta destino.
 
 **Secrets requeridos**:
 
@@ -183,7 +229,7 @@ Transit Gateway escala a N VPCs sin relaciones de peering punto a punto. Al agre
 Centralizar hub Y spokes en una sola cuenta permite gestionar todo el networking desde un único punto: VPCs, subnets, TGW attachments, rutas y RAM shares. Workloads solo consume subnets compartidas y despliega compute — no necesita permisos de networking. Agregar un nuevo spoke es agregar una entrada al mapa `spoke_vpcs` y hacer apply en connectivity.
 
 **¿Por qué AWS RAM en vez de crear subnets en cada cuenta?**  
-RAM permite compartir subnets existentes sin duplicar infraestructura de red. Las subnets se crean una vez en Connectivity y se comparten a las cuentas de Workloads (dev y prod). Los recursos desplegados en cada cuenta (EC2, ALB, RDS) aparecen en las subnets compartidas sin que Workloads tenga que gestionar VPCs ni rutas. Solo se comparten subnets de app/db — las subnets TGW son infraestructura de networking y no se comparten. El sharing se hace por cuenta individual (no por OU) para control explícito de qué cuentas acceden a qué subnets.
+RAM permite compartir subnets existentes sin duplicar infraestructura de red. Las subnets se crean una vez en Connectivity y se comparten a las cuentas de Workloads (dev y prod). Los recursos desplegados en cada cuenta (EC2, ALB, RDS) aparecen en las subnets compartidas sin que Workloads tenga que gestionar VPCs ni rutas. Solo se comparten subnets de app/db — las subnets TGW son infraestructura de networking y no se comparten. Cada spoke tiene su propio resource share asociado únicamente a su cuenta Workloads correspondiente, garantizando que cada cuenta solo ve sus propias subnets.
 
 **¿Por qué las variables de red viven en GitHub y no en Terraform?**  
 Los defaults hardcodeados en `variables.tf` generan duplicación. Centralizar los valores en GitHub repo variables crea una fuente de verdad única. El pipeline inyecta condicionalmente solo las variables que cada cuenta necesita — connectivity recibe la configuración de red completa (`IN_OUT_CIDR` + `SPOKE_VPCS`), workloads solo recibe el rol de despliegue.
@@ -335,7 +381,31 @@ VPCs spoke por entorno. Cada entrada crea una VPC con sus subnets, TGW attachmen
 ARN del rol OIDC base en la cuenta Tooling. GitHub Actions lo asume para obtener credenciales temporales.
 
 ```
-arn:aws:iam::123456789012:role/github-oidc-role
+arn:aws:iam::111111111111:role/github-oidc-role
+```
+
+### `ROLE_ARN_CONNECTIVITY` (secret)
+
+ARN del rol de despliegue en la cuenta Connectivity. El rol OIDC base lo asume via `sts:AssumeRole`.
+
+```
+arn:aws:iam::222222222222:role/terraform-deploy
+```
+
+### `ROLE_ARN_WORKLOADS_DEV` (secret)
+
+ARN del rol de despliegue en la cuenta Workloads Dev.
+
+```
+arn:aws:iam::333333333333:role/terraform-deploy
+```
+
+### `ROLE_ARN_WORKLOADS_PROD` (secret)
+
+ARN del rol de despliegue en la cuenta Workloads Prod.
+
+```
+arn:aws:iam::444444444444:role/terraform-deploy
 ```
 
 ### `S3_STATE` (secret)
@@ -348,8 +418,8 @@ my-project-terraform-state
 
 ### `WORKLOADS_ACCOUNT_IDS` (secret)
 
-IDs de las cuentas de Workloads para la asociación de principal en AWS RAM. Una entrada por cuenta.
+IDs de las cuentas de Workloads para la asociación de principal en AWS RAM. Las keys deben coincidir con las de `SPOKE_VPCS`.
 
 ```json
-{ "dev": "222222222222", "prod": "333333333333" }
+{ "dev": "333333333333", "prod": "444444444444" }
 ```
