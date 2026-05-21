@@ -10,6 +10,10 @@ output "subnet_ids" {
   value = { for key, val in aws_subnet.this : key => val.id }
 }
 
+output "subnet_arns" {
+  value = { for key, val in aws_subnet.this : key => val.arn }
+}
+
 output "tgw_attachments" {
   value = local.tgw_attachments
 }

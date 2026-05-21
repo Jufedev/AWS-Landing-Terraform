@@ -18,19 +18,22 @@ Implementación de una AWS Landing Zone multicuenta con Terraform. Arquitectura 
 |--------|-----|-----------|
 | **Root** | — | AWS Organizations, Identity Center (SSO), Cost Explorer |
 | **Tooling** | Share Resources | Remote state de Terraform (S3 con versionado, cifrado y locking nativo), rol OIDC base |
-| **Connectivity** | Share Resources | Networking centralizado: VPC hub (Ingress/Egress), Transit Gateway, Internet Gateway |
-| **Workloads** | Workloads | Cargas de trabajo multi-entorno (dev/prod via Terraform workspaces) |
+| **Connectivity** | Share Resources | Networking centralizado: VPC hub + VPCs spoke, Transit Gateway, Internet Gateway, NAT Gateway, AWS RAM |
+| **Workloads Dev** | Workloads | Cargas de trabajo del entorno dev en subnets compartidas por RAM |
+| **Workloads Prod** | Workloads | Cargas de trabajo del entorno prod en subnets compartidas por RAM |
 
 ### Networking — Hub-Spoke
 
-Modelo hub-spoke donde la cuenta **Connectivity** gestiona el networking centralizado y **Workloads** consume la conectividad via Transit Gateway.
+Modelo hub-spoke donde la cuenta **Connectivity** gestiona TODO el networking (hub + spokes) y comparte subnets a **Workloads** via AWS RAM.
 
 **Hub — Connectivity Account** (desplegado en `us-east-1a`, `us-east-1b`):
 
-- **VPC IngresEgress**: subnets públicas con Internet Gateway, subnets privadas TGW para los ENIs del Transit Gateway.
-- **Transit Gateway**: punto central de la topología hub-spoke. Los spokes se conectan via attachments.
+- **VPC IngresEgress (hub)**: subnets públicas con Internet Gateway, subnets privadas TGW para los ENIs del Transit Gateway.
+- **VPCs Spoke**: creadas dinámicamente a partir de `var.spoke_vpcs` usando `merge()` con el hub. Un spoke por entorno (dev, prod, etc.) — sin workspaces, solo `for_each`.
+- **Transit Gateway**: punto central de la topología hub-spoke. Todos los spokes se conectan via attachments.
 - **Internet Gateway**: salida directa a internet para las subnets públicas del hub.
 - **NAT Gateway**: salida a internet para tráfico proveniente de los spokes (TGW subnets → NAT → Internet).
+- **AWS RAM**: comparte subnets de app/db de los spokes a las cuentas de Workloads (dev y prod son cuentas separadas). Las subnets TGW NO se comparten (son infraestructura de networking).
 
 **Routing del Hub**:
 
@@ -40,20 +43,22 @@ Modelo hub-spoke donde la cuenta **Connectivity** gestiona el networking central
 | Public subnets | CIDRs de cada spoke | Transit Gateway |
 | TGW subnets | `0.0.0.0/0` | NAT Gateway |
 
-Las rutas hacia los spokes se generan dinámicamente a partir de `var.spoke_cidrs` (`flatten` + `for_each`). Si un spoke no existe en la variable, su ruta no se crea.
+Las rutas hacia los spokes se generan dinámicamente — los CIDRs se derivan de `var.spoke_vpcs` (no requiere variable separada).
 
-**Spokes — Workloads Account** (un spoke por workspace):
-
-- Las subnets, CIDRs y estructura de cada spoke son definidos por el usuario via variables — la cantidad y tipo de subnets dependen del caso de uso.
-- Cada spoke se attache al Transit Gateway del hub via `terraform_remote_state`.
-- Convención de naming para subnets: `{tipo}-{sufijo}` (ej: `app-a`, `db-b`, `tgw-a`). El prefijo antes del primer guión determina el tipo y agrupa subnets en la misma route table.
-
-**Routing de los Spokes**:
+**Routing de los Spokes** (creado en Connectivity):
 
 | Route Table | Destino | Siguiente salto |
 |-------------|---------|-----------------|
 | App/DB subnets | `0.0.0.0/0` | Transit Gateway |
 | TGW subnets | — | Sin ruta default (subnets de attachment, evita loop circular) |
+
+**Workloads Account**:
+
+- Dev y prod son cuentas AWS separadas dentro de la misma OU (Workloads).
+- NO crean VPCs, subnets, TGW attachments ni rutas — todo vive en Connectivity.
+- Consumen subnets compartidas via RAM, leyendo IDs desde `terraform_remote_state`.
+- Cada cuenta usa workspaces para seleccionar qué spoke le corresponde y desplegar compute en sus subnets.
+- Convención de naming para subnets: `{tipo}-{sufijo}` (ej: `app-a`, `db-b`, `tgw-a`). El prefijo antes del primer guión determina el tipo y agrupa subnets en la misma route table.
 
 **Flujo de tráfico spoke → internet**: Spoke (app/db subnet) → TGW → Hub (TGW subnet) → NAT Gateway → Internet Gateway → Internet.
 
@@ -85,16 +90,16 @@ Pipeline con `workflow_dispatch`:
 | `ROLE_ARN_WORKLOADS_DEV` | Rol de despliegue en Workloads (dev) |
 | `ROLE_ARN_WORKLOADS_PROD` | Rol de despliegue en Workloads (prod) |
 | `S3_STATE` | Nombre del bucket S3 para remote state |
+| `WORKLOADS_ACCOUNT_IDS` | JSON `map(string)` con IDs de las cuentas Workloads para AWS RAM |
 
 **Variables de repositorio** (GitHub Settings → Variables):
 
 | Variable | Formato | Propósito |
 |----------|---------|-----------|
 | `IN_OUT_CIDR` | JSON `object` | VPC del hub: CIDR + subnets (pasado como `TF_VAR_cidr_ingress_egress`) |
-| `SPOKE_CIDRS` | JSON `map(object)` | Configuración de red completa de cada spoke por workspace (pasado como `TF_VAR_cidrs_spokes`) |
-| `VPCS` | JSON `map(string)` | CIDRs de los spokes para ruteo en el hub (pasado como `TF_VAR_spoke_cidrs`) |
+| `SPOKE_VPCS` | JSON `map(object)` | VPCs spoke con subnets: CIDR + mapa de subnets por entorno (pasado como `TF_VAR_spoke_vpcs`) |
 
-Las variables de red no tienen valores default en Terraform — los valores se gestionan exclusivamente desde GitHub para mantener una fuente de verdad única. El pipeline inyecta condicionalmente las variables según la cuenta seleccionada (connectivity recibe `IN_OUT_CIDR` + `VPCs`, workloads recibe `SPOKE_CIDRS`).
+Las variables de red no tienen valores default en Terraform — los valores se gestionan exclusivamente desde GitHub para mantener una fuente de verdad única. El pipeline inyecta condicionalmente las variables según la cuenta seleccionada (connectivity recibe `IN_OUT_CIDR` + `SPOKE_VPCS` + `WORKLOADS_ACCOUNT_IDS`, workloads solo recibe el rol de despliegue).
 
 ### State Management
 
@@ -139,15 +144,15 @@ Script de bootstrap (`stateUtil.sh`) para crear el bucket con backend local y mi
 │   ├── connectivity/
 │   │   ├── provider.tf             # assume_role cross-account
 │   │   ├── backend.tf
-│   │   ├── main.tf                 # VPC hub + TGW + IGW + NAT GW + rutas dinámicas
-│   │   ├── variables.tf            # cidr_ingress_egress + spoke_cidrs (sin defaults)
-│   │   └── outputs.tf              # Exporta transit_id, attachment_ids, internet_gw, nat_gw
+│   │   ├── main.tf                 # VPC hub + VPCs spoke + TGW + IGW + NAT GW + rutas + RAM
+│   │   ├── variables.tf            # cidr_ingress_egress + spoke_vpcs + workloads_account_id
+│   │   └── outputs.tf              # Exporta transit_id, spoke VPC/subnet/route table IDs
 │   └── workloads/
 │       ├── provider.tf             # assume_role cross-account, workspace tags
 │       ├── backend.tf
-│       ├── main.tf                 # Remote state connectivity + VPC spoke + TGW attachment + rutas
-│       ├── variables.tf            # cidrs_spokes con tipo explícito (sin defaults)
-│       └── outputs.tf
+│       ├── main.tf                 # Remote state connectivity → consume subnets compartidas via RAM
+│       ├── variables.tf            # Variables comunes (sin networking)
+│       └── outputs.tf              # VPC ID y subnet IDs del workspace activo
 └── modules/
     ├── networking/
     │   ├── vpc/                    # VPC + Subnets (for_each, multi-VPC, TGW attachment output)
@@ -174,14 +179,20 @@ Centralizar el networking en una cuenta dedicada permite controlar todo el tráf
 **¿Por qué Transit Gateway en vez de VPC Peering?**  
 Transit Gateway escala a N VPCs sin relaciones de peering punto a punto. Al agregar nuevas cuentas o VPCs al entorno, solo se requiere un attachment al TGW existente, sin modificar route tables en cada VPC.
 
+**¿Por qué todas las VPCs viven en Connectivity y no en Workloads?**  
+Centralizar hub Y spokes en una sola cuenta permite gestionar todo el networking desde un único punto: VPCs, subnets, TGW attachments, rutas y RAM shares. Workloads solo consume subnets compartidas y despliega compute — no necesita permisos de networking. Agregar un nuevo spoke es agregar una entrada al mapa `spoke_vpcs` y hacer apply en connectivity.
+
+**¿Por qué AWS RAM en vez de crear subnets en cada cuenta?**  
+RAM permite compartir subnets existentes sin duplicar infraestructura de red. Las subnets se crean una vez en Connectivity y se comparten a las cuentas de Workloads (dev y prod). Los recursos desplegados en cada cuenta (EC2, ALB, RDS) aparecen en las subnets compartidas sin que Workloads tenga que gestionar VPCs ni rutas. Solo se comparten subnets de app/db — las subnets TGW son infraestructura de networking y no se comparten. El sharing se hace por cuenta individual (no por OU) para control explícito de qué cuentas acceden a qué subnets.
+
 **¿Por qué las variables de red viven en GitHub y no en Terraform?**  
-Los defaults hardcodeados en `variables.tf` generan duplicación: los CIDRs de los spokes aparecerían tanto en workloads como en connectivity. Centralizar los valores en GitHub repo variables crea una fuente de verdad única. El pipeline inyecta condicionalmente solo las variables que cada cuenta necesita, evitando warnings por variables no declaradas.
+Los defaults hardcodeados en `variables.tf` generan duplicación. Centralizar los valores en GitHub repo variables crea una fuente de verdad única. El pipeline inyecta condicionalmente solo las variables que cada cuenta necesita — connectivity recibe la configuración de red completa (`IN_OUT_CIDR` + `SPOKE_VPCS`), workloads solo recibe el rol de despliegue.
 
 **¿Por qué las subnets TGW no tienen ruta default al Transit Gateway?**  
 Las subnets TGW son los puntos de attachment — el tráfico entra a la VPC por ellas desde el Transit Gateway. Agregar una ruta `0.0.0.0/0 → TGW` en su route table crearía un loop circular: el tráfico llegaría desde el TGW, la route table lo enviaría de vuelta al TGW, y así indefinidamente.
 
 **¿Por qué Terraform workspaces para entornos?**  
-Los workspaces permiten manejar dev y prod con la misma configuración, diferenciando solo CIDRs y tags. El workspace se selecciona en el pipeline, nunca manualmente. Evita duplicar código entre entornos.
+En Workloads, los workspaces seleccionan qué spoke consumir (dev/prod). En Connectivity, los spokes se crean dinámicamente via `for_each` sobre `var.spoke_vpcs` — sin workspaces, todos los spokes coexisten en un solo state. Workloads usa workspaces para filtrar los subnet IDs del spoke correspondiente al entorno.
 
 **¿Por qué cross-account role assumption?**  
 Un único rol OIDC en la cuenta Tooling asume roles de despliegue en cada cuenta destino. Cada cuenta tiene su propio rol con permisos acotados a lo que necesita. El pipeline resuelve el rol correcto automáticamente según la cuenta y el entorno seleccionados.
@@ -250,10 +261,11 @@ terraform plan
 - [x] Módulo VPC con soporte multi-VPC, subnets dinámicas y output de TGW attachments
 - [x] Módulo Transit Gateway (attachments reutilizable con for_each)
 - [x] Módulo S3 reutilizable (versionado, cifrado, public access block)
-- [x] Cuenta Connectivity: VPC hub + Transit Gateway + Internet Gateway + NAT Gateway
-- [x] Cuenta Connectivity: route tables con rutas dinámicas a spokes (flatten + for_each)
-- [x] Cuenta Workloads: VPC spokes + TGW attachment via remote state
-- [x] Cuenta Workloads: route tables de app/db → TGW (excluyendo subnets de attachment)
+- [x] Cuenta Connectivity: VPC hub + VPCs spoke (dinámicas via merge + for_each)
+- [x] Cuenta Connectivity: Transit Gateway + Internet Gateway + NAT Gateway
+- [x] Cuenta Connectivity: route tables con rutas dinámicas hub↔spokes
+- [x] Cuenta Connectivity: AWS RAM para compartir subnets app/db a Workloads
+- [x] Cuenta Workloads: consume subnets compartidas via remote state + RAM
 - [x] Terraform workspaces para separación de entornos (dev/prod)
 
 ### Pendiente
@@ -261,10 +273,83 @@ terraform plan
 - [ ] Módulo CloudFront (CDN)
 - [ ] Módulos de compute (EC2, ASG, ALB)
 - [ ] Módulos de base de datos (RDS, DocumentDB)
-- [ ] AWS RAM para compartir subnets cross-account
-- [ ] SCPs (Service Control Policies) por OU
-- [ ] AWS Config + Security Hub
-
 ---
 
 > **Nota sobre testing:** AWS Organizations desactiva el free tier de las cuentas miembro. Debido a la limitación de créditos, solo se realizaron pruebas funcionales sobre la capa de networking (VPCs, Transit Gateway, routing). Los módulos de compute (EC2, ASG, ALB) y base de datos (RDS, DocumentDB) están definidos en el código pero no han sido desplegados ni validados en un entorno real.
+
+---
+
+## Ejemplo de variables de GitHub
+
+### `IN_OUT_CIDR` (variable)
+
+VPC hub con subnets públicas y TGW. Pasado como `TF_VAR_cidr_ingress_egress`.
+
+```json
+{
+  "cidr_block": "10.0.0.0/16",
+  "subnets": {
+    "public-a1": { "cidr_block": "10.0.1.0/24", "az": "us-east-1a" },
+    "public-b1": { "cidr_block": "10.0.2.0/24", "az": "us-east-1b" },
+    "tgw-a1":    { "cidr_block": "10.0.10.0/24", "az": "us-east-1a" },
+    "tgw-b1":    { "cidr_block": "10.0.11.0/24", "az": "us-east-1b" }
+  }
+}
+```
+
+### `SPOKE_VPCS` (variable)
+
+VPCs spoke por entorno. Cada entrada crea una VPC con sus subnets, TGW attachment y rutas. Pasado como `TF_VAR_spoke_vpcs`.
+
+```json
+{
+  "dev": {
+    "cidr_block": "10.1.0.0/16",
+    "subnets": {
+      "app-a1": { "cidr_block": "10.1.1.0/24", "az": "us-east-1a" },
+      "app-b1": { "cidr_block": "10.1.2.0/24", "az": "us-east-1b" },
+      "db-a1":  { "cidr_block": "10.1.3.0/24", "az": "us-east-1a" },
+      "db-b1":  { "cidr_block": "10.1.4.0/24", "az": "us-east-1b" },
+      "tgw-a1": { "cidr_block": "10.1.10.0/24", "az": "us-east-1a" },
+      "tgw-b1": { "cidr_block": "10.1.11.0/24", "az": "us-east-1b" }
+    }
+  },
+  "prod": {
+    "cidr_block": "10.2.0.0/16",
+    "subnets": {
+      "app-a1": { "cidr_block": "10.2.1.0/24", "az": "us-east-1a" },
+      "app-b1": { "cidr_block": "10.2.2.0/24", "az": "us-east-1b" },
+      "db-a1":  { "cidr_block": "10.2.3.0/24", "az": "us-east-1a" },
+      "db-b1":  { "cidr_block": "10.2.4.0/24", "az": "us-east-1b" },
+      "tgw-a1": { "cidr_block": "10.2.10.0/24", "az": "us-east-1a" },
+      "tgw-b1": { "cidr_block": "10.2.11.0/24", "az": "us-east-1b" }
+    }
+  }
+}
+```
+
+> **Convención de naming**: el prefijo antes del primer guión (`app`, `db`, `tgw`) determina el tipo de subnet y agrupa subnets en la misma route table. Las subnets `tgw` son de attachment al Transit Gateway y NO se comparten via RAM. Las subnets `app` y `db` se comparten a Workloads.
+
+### `AWS_ROLE_ARN` (secret)
+
+ARN del rol OIDC base en la cuenta Tooling. GitHub Actions lo asume para obtener credenciales temporales.
+
+```
+arn:aws:iam::123456789012:role/github-oidc-role
+```
+
+### `S3_STATE` (secret)
+
+Nombre del bucket S3 en la cuenta Tooling donde se almacena el remote state.
+
+```
+my-project-terraform-state
+```
+
+### `WORKLOADS_ACCOUNT_IDS` (secret)
+
+IDs de las cuentas de Workloads para la asociación de principal en AWS RAM. Una entrada por cuenta.
+
+```json
+{ "dev": "222222222222", "prod": "333333333333" }
+```

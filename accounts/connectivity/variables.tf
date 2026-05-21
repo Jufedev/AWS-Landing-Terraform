@@ -29,7 +29,18 @@ variable "cidr_ingress_egress" {
   })
 }
 
-variable "spoke_cidrs" {
-  description = "Variable para las routes"
+variable "spoke_vpcs" {
+  description = "Mapa de VPCs spoke a crear dinamicamente (dev, prod, etc)"
+  type = map(object({
+    cidr_block = string
+    subnets = map(object({
+      cidr_block = string
+      az         = string
+    }))
+  }))
+}
+
+variable "workloads_account_ids" {
+  description = "IDs de las cuentas de Workloads para compartir subnets via RAM (ej: { dev = \"123...\", prod = \"456...\" })"
   type        = map(string)
 }

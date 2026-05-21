@@ -69,13 +69,12 @@ jobs:
                   if [ "${{ inputs.target_account }}" = "connectivity" ]; then
                     echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_CONNECTIVITY }}" >> "$GITHUB_ENV"
                     echo "TF_VAR_cidr_ingress_egress=${{ vars.IN_OUT_CIDR }}" >> "$GITHUB_ENV"
-                    echo "TF_VAR_spoke_cidrs=${{ vars.VPCS }}" >> "$GITHUB_ENV"
+                    echo "TF_VAR_spoke_vpcs=${{ vars.SPOKE_VPCS }}" >> "$GITHUB_ENV"
+                    echo "TF_VAR_workloads_account_ids=${{ secrets.WORKLOADS_ACCOUNT_IDS }}" >> "$GITHUB_ENV"
                   elif [ "${{ inputs.environmentWorkload }}" = "prod" ]; then
                     echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_WORKLOADS_PROD }}" >> "$GITHUB_ENV"
-                    echo "TF_VAR_cidrs_spokes=${{ vars.SPOKE_CIDRS }}" >> "$GITHUB_ENV"
                   else
                     echo "TF_VAR_deploy_role_arn=${{ secrets.ROLE_ARN_WORKLOADS_DEV }}" >> "$GITHUB_ENV"
-                    echo "TF_VAR_cidrs_spokes=${{ vars.SPOKE_CIDRS }}" >> "$GITHUB_ENV"
                   fi
 
             - name: Terraform init

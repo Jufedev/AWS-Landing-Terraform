@@ -17,14 +17,3 @@ variable "deploy_role_arn" {
   description = "Rol para la cuenta de despliegue"
   type        = string
 }
-
-variable "cidrs_spokes" {
-  description = "Valores defecto del las cargas"
-  type = map(object({
-    cidr_block = string
-    subnets = map(object({
-      cidr_block = string
-      az         = string
-    }))
-  }))
-}

@@ -1,11 +1,3 @@
-locals {
-  config = var.cidrs_spokes
-}
-
-locals {
-  current = local.config[terraform.workspace]
-}
-
 data "terraform_remote_state" "connectivity" {
   backend = "s3"
   config = {
@@ -15,23 +7,15 @@ data "terraform_remote_state" "connectivity" {
   }
 }
 
-module "vpc" {
-  source = "../../modules/networking/vpc"
+locals {
+  spoke_subnet_ids     = data.terraform_remote_state.connectivity.outputs.spoke_subnet_ids
+  spoke_vpc_ids        = data.terraform_remote_state.connectivity.outputs.spoke_vpc_ids
+  spoke_route_table_ids = data.terraform_remote_state.connectivity.outputs.spoke_route_table_ids
 
-  vpcs = {
-    (terraform.workspace) = local.current
+  current_subnet_ids = {
+    for key, id in local.spoke_subnet_ids : split(".", key)[1] => id
+    if startswith(key, "${terraform.workspace}.")
   }
-}
 
-module "transit_attach" {
-  source          = "../../modules/networking/transit-gateway"
-  transit_gateway = data.terraform_remote_state.connectivity.outputs.transit_id
-  attachments     = module.vpc.tgw_attachments
-}
-
-resource "aws_route" "r" {
-  for_each               = { for key, routetable_ids in module.vpc.route_table_ids : key => routetable_ids if split(".", key)[1] != "tgw" }
-  route_table_id         = each.value
-  destination_cidr_block = "0.0.0.0/0"
-  transit_gateway_id     = data.terraform_remote_state.connectivity.outputs.transit_id
+  current_vpc_id = local.spoke_vpc_ids[terraform.workspace]
 }
