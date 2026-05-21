@@ -56,6 +56,12 @@ resource "aws_nat_gateway" "this" {
   }
 }
 
+resource "aws_ec2_transit_gateway_route" "default" {
+  destination_cidr_block         = "0.0.0.0/0"
+  transit_gateway_attachment_id  = module.transit.attachment_ids["IngresEgress"]
+  transit_gateway_route_table_id = aws_ec2_transit_gateway.this.association_default_route_table_id
+}
+
 resource "aws_route" "tgw_to_nat" {
   for_each               = { for key, id in module.vpc.route_table_ids : key => id if split(".", key)[0] == "IngresEgress" && split(".", key)[1] == "tgw" }
   route_table_id         = each.value
