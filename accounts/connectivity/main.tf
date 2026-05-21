@@ -93,10 +93,21 @@ resource "aws_route" "spoke_to_tgw" {
   transit_gateway_id     = aws_ec2_transit_gateway.this.id
 }
 
+resource "aws_route" "nat_return_to_spoke" {
+  for_each               = local.spoke_cidrs
+  route_table_id         = module.vpc.default_route_table_ids["IngresEgress"]
+  destination_cidr_block = each.value
+  transit_gateway_id     = aws_ec2_transit_gateway.this.id
+}
+
 resource "aws_ram_resource_share" "spoke" {
   for_each                  = var.spoke_vpcs
   name                      = "${each.key}-subnets"
   allow_external_principals = false
+
+  tags = {
+    Name = "${each.key}-subnets"
+  }
 }
 
 resource "aws_ram_resource_association" "subnets" {

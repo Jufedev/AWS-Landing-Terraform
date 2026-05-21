@@ -21,3 +21,7 @@ output "tgw_attachments" {
 output "route_table_ids" {
   value = { for key, val in aws_route_table.this : key => val.id }
 }
+
+output "default_route_table_ids" {
+  value = { for key, val in aws_vpc.this : key => val.default_route_table_id }
+}

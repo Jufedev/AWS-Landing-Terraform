@@ -56,6 +56,13 @@ resource "aws_route_table" "this" {
   }
 }
 
+resource "aws_ec2_tag" "default_rt" {
+  for_each    = aws_vpc.this
+  resource_id = each.value.default_route_table_id
+  key         = "Name"
+  value       = "rt-${each.key}-main"
+}
+
 resource "aws_route_table_association" "this" {
   for_each = aws_subnet.this
 

@@ -32,7 +32,7 @@ Modelo hub-spoke donde la cuenta **Connectivity** gestiona TODO el networking (h
 - **VPCs Spoke**: creadas dinámicamente a partir de `var.spoke_vpcs` usando `merge()` con el hub. Un spoke por entorno (dev, prod, etc.) — sin workspaces, solo `for_each`.
 - **Transit Gateway**: punto central de la topología hub-spoke. Todos los spokes se conectan via attachments.
 - **Internet Gateway**: salida directa a internet para las subnets públicas del hub.
-- **NAT Gateway**: salida a internet para tráfico proveniente de los spokes (TGW subnets → NAT → Internet).
+- **NAT Gateway** (regional, EIPs automáticas): salida a internet para tráfico proveniente de los spokes (TGW subnets → NAT → Internet). Modo regional — crea ENIs en cada AZ con asignación automática de Elastic IPs.
 - **AWS RAM**: un resource share por spoke (`dev-subnets`, `prod-subnets`), cada uno compartido solo a su cuenta Workloads correspondiente. Las subnets TGW NO se comparten (son infraestructura de networking). Las keys de `spoke_vpcs` deben coincidir con las keys de `workloads_account_ids`.
 
 **Routing del Hub**:
@@ -42,8 +42,17 @@ Modelo hub-spoke donde la cuenta **Connectivity** gestiona TODO el networking (h
 | Public subnets | `0.0.0.0/0` | Internet Gateway |
 | Public subnets | CIDRs de cada spoke | Transit Gateway |
 | TGW subnets | `0.0.0.0/0` | NAT Gateway |
+| Main (default) | CIDRs de cada spoke | Transit Gateway |
 
-Las rutas hacia los spokes se generan dinámicamente — los CIDRs se derivan de `var.spoke_vpcs` (no requiere variable separada).
+Las rutas hacia los spokes se generan dinámicamente — los CIDRs se derivan de `var.spoke_vpcs` (no requiere variable separada). La main route table (creada automáticamente por AWS) es utilizada por los ENIs internos del NAT Gateway regional para enrutar el tráfico de retorno hacia los spokes.
+
+**Routing del Transit Gateway**:
+
+| Destino | Siguiente salto |
+|---------|-----------------|
+| `0.0.0.0/0` | Attachment de IngresEgress |
+
+Ruta default estática que dirige todo el tráfico de los spokes hacia el hub para salida a internet via NAT Gateway.
 
 **Routing de los Spokes** (creado en Connectivity):
 
@@ -233,6 +242,9 @@ RAM permite compartir subnets existentes sin duplicar infraestructura de red. La
 
 **¿Por qué las variables de red viven en GitHub y no en Terraform?**  
 Los defaults hardcodeados en `variables.tf` generan duplicación. Centralizar los valores en GitHub repo variables crea una fuente de verdad única. El pipeline inyecta condicionalmente solo las variables que cada cuenta necesita — connectivity recibe la configuración de red completa (`IN_OUT_CIDR` + `SPOKE_VPCS`), workloads solo recibe el rol de despliegue.
+
+**¿Por qué NAT Gateway regional y no uno por AZ?**  
+El modo regional crea ENIs automáticamente en cada AZ con asignación automática de Elastic IPs — sin necesidad de gestionar EIPs ni seleccionar subnets manualmente. Los ENIs internos del NAT regional usan la default route table del VPC (la que AWS crea automáticamente), por lo que es necesario agregar rutas `spoke CIDRs → TGW` en esa route table para que el tráfico de retorno (internet → NAT → de-NAT → spoke) llegue correctamente al Transit Gateway. Las Elastic IPs pueden tardar en aprovisionarse en todas las AZs al crear el NAT — esto es normal y no requiere intervención.
 
 **¿Por qué las subnets TGW no tienen ruta default al Transit Gateway?**  
 Las subnets TGW son los puntos de attachment — el tráfico entra a la VPC por ellas desde el Transit Gateway. Agregar una ruta `0.0.0.0/0 → TGW` en su route table crearía un loop circular: el tráfico llegaría desde el TGW, la route table lo enviaría de vuelta al TGW, y así indefinidamente.
